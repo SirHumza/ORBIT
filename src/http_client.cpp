@@ -9,10 +9,13 @@
 #include <orbis/Sysmodule.h>
 
 #include <cstdio>
+#include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <sstream>
 #include <new>
+#include <sys/stat.h>
 
 #include <vector>
 #include <unistd.h>
@@ -39,6 +42,8 @@ const size_t kHttpPoolSize = 512 * 1024;
 const int kMaxRedirects = 6;
 const uint32_t kConnectTimeoutUs = 10 * 1000 * 1000;
 const uint32_t kIoTimeoutUs = 30 * 1000 * 1000;
+const int32_t kHttpHeaderOverwrite = 0;
+const size_t kDownloadBufferSize = 1024 * 1024;
 
 struct RequestHandles {
     int tmpl;
@@ -142,6 +147,28 @@ bool header_value(const char* headers, size_t header_size, const char* name, std
     return false;
 }
 
+bool parse_content_range(const std::string& header, uint64_t& first, uint64_t& last,
+                         uint64_t& total) {
+    const std::string value = lower_ascii(trim(header));
+    if (value.compare(0, 6, "bytes ") != 0) return false;
+    size_t offset = 6;
+    const auto number = [&value, &offset](uint64_t& result) {
+        if (offset >= value.size() || value[offset] < '0' || value[offset] > '9') return false;
+        result = 0;
+        while (offset < value.size() && value[offset] >= '0' && value[offset] <= '9') {
+            const uint64_t digit = static_cast<uint64_t>(value[offset] - '0');
+            if (result > (UINT64_MAX - digit) / 10) return false;
+            result = result * 10 + digit;
+            ++offset;
+        }
+        return true;
+    };
+    if (!number(first) || offset >= value.size() || value[offset++] != '-' ||
+        !number(last) || offset >= value.size() || value[offset++] != '/' ||
+        !number(total) || offset != value.size()) return false;
+    return first <= last && last < total;
+}
+
 bool is_hb_store_origin(const std::string& url) {
     return url.compare(0, sizeof(kHbStorePrefix) - 1, kHbStorePrefix) == 0;
 }
@@ -150,7 +177,8 @@ const char* user_agent_for_url(const std::string& url) {
     return is_hb_store_origin(url) ? kHbStoreUserAgent : kUserAgent;
 }
 
-bool open_get(int http_context, const std::string& url, RequestHandles& handles,
+bool open_get(int http_context, const std::string& url, uint64_t range_start,
+              RequestHandles& handles,
               int32_t& status, std::string& redirect, std::string& error) {
     handles.tmpl = sceHttpCreateTemplate(http_context, user_agent_for_url(url),
                                          ORBIS_HTTP_VERSION_1_1, 1);
@@ -195,6 +223,23 @@ bool open_get(int http_context, const std::string& url, RequestHandles& handles,
         return false;
     }
 
+    if (range_start > 0) {
+        std::ostringstream range;
+        range << "bytes=" << range_start << '-';
+        policy_result = sceHttpAddRequestHeader(handles.req, "Range", range.str().c_str(),
+                                                kHttpHeaderOverwrite);
+        if (policy_result < 0) {
+            error = native_error("add HTTP Range header", policy_result);
+            return false;
+        }
+        policy_result = sceHttpAddRequestHeader(handles.req, "Accept-Encoding", "identity",
+                                                kHttpHeaderOverwrite);
+        if (policy_result < 0) {
+            error = native_error("request identity encoding", policy_result);
+            return false;
+        }
+    }
+
     const int send_result = sceHttpSendRequest(handles.req, 0, 0);
     if (send_result < 0) {
         error = native_error("sceHttpSendRequest", send_result);
@@ -222,14 +267,15 @@ bool open_get(int http_context, const std::string& url, RequestHandles& handles,
     return true;
 }
 
-bool open_final_get(int http_context, const std::string& initial_url, RequestHandles& handles,
+bool open_final_get(int http_context, const std::string& initial_url, uint64_t range_start,
+                    RequestHandles& handles,
                     int32_t& status, std::string& final_url, std::string& error) {
     if (!validate_http_url(initial_url, error)) return false;
     const bool pin_hb_store_origin = is_hb_store_origin(initial_url);
     std::string url = initial_url;
     for (int redirects = 0; redirects <= kMaxRedirects; ++redirects) {
         std::string location;
-        if (!open_get(http_context, url, handles, status, location, error)) {
+        if (!open_get(http_context, url, range_start, handles, status, location, error)) {
             close_request(handles);
             return false;
         }
@@ -329,7 +375,7 @@ bool HttpClient::get_text(const std::string& url, size_t max_bytes, std::string&
     RequestHandles handles;
     int32_t status = 0;
     std::string final_url;
-    if (!open_final_get(http_context_, url, handles, status, final_url, error)) return false;
+    if (!open_final_get(http_context_, url, 0, handles, status, final_url, error)) return false;
     if (status != 200) {
         error = status_error(status);
         close_request(handles);
@@ -360,41 +406,103 @@ bool HttpClient::get_text(const std::string& url, size_t max_bytes, std::string&
 bool HttpClient::download(const std::string& url, const char* destination, uint64_t expected_size,
                           ProgressCallback callback, void* user, uint64_t& downloaded_bytes,
                           std::string& error) {
+    downloaded_bytes = 0;
+    if (!destination || expected_size == 0 ||
+        expected_size > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
+        error = "HTTP package destination or expected size is invalid";
+        return false;
+    }
+    const int fd = open(destination, O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        error = "cannot securely create partial package file";
+        return false;
+    }
+    struct stat file_info;
+    if (fstat(fd, &file_info) != 0 || !S_ISREG(file_info.st_mode) || file_info.st_size < 0) {
+        error = "partial package path is not a regular file";
+        close(fd);
+        return false;
+    }
+    uint64_t range_start = static_cast<uint64_t>(file_info.st_size);
+    if (range_start > expected_size) {
+        if (ftruncate(fd, 0) != 0) {
+            error = "cannot reset oversized partial package";
+            close(fd);
+            return false;
+        }
+        range_start = 0;
+    }
+    if (range_start == expected_size) {
+        close(fd);
+        downloaded_bytes = expected_size;
+        if (callback) callback(downloaded_bytes, expected_size, user);
+        return true;
+    }
+
     RequestHandles handles;
     int32_t status = 0;
     std::string final_url;
-    if (!open_final_get(http_context_, url, handles, status, final_url, error)) return false;
-    if (status != 200) {
+    if (!open_final_get(http_context_, url, range_start, handles, status, final_url, error)) {
+        close(fd);
+        return false;
+    }
+
+    uint64_t write_offset = range_start;
+    uint64_t response_bytes_expected = expected_size;
+    if (status == 206) {
+        char* headers = 0;
+        size_t header_size = 0;
+        std::string content_range;
+        uint64_t first = 0;
+        uint64_t last = 0;
+        uint64_t total = 0;
+        const int header_result = sceHttpGetAllResponseHeaders(handles.req, &headers, &header_size);
+        if (header_result < 0 ||
+            !header_value(headers, header_size, "content-range", content_range) ||
+            !parse_content_range(content_range, first, last, total) || first != range_start ||
+            total != expected_size) {
+            error = "HTTP partial response has an invalid Content-Range";
+            close_request(handles);
+            close(fd);
+            return false;
+        }
+        response_bytes_expected = last - first + 1;
+    } else if (status == 200) {
+        write_offset = 0;
+        response_bytes_expected = expected_size;
+        if (ftruncate(fd, 0) != 0) {
+            error = "cannot reset partial package after server ignored Range";
+            close_request(handles);
+            close(fd);
+            return false;
+        }
+    } else {
         error = status_error(status);
         close_request(handles);
+        close(fd);
         return false;
     }
 
     int content_length_type = 0;
     size_t content_length = 0;
     if (sceHttpGetResponseContentLength(handles.req, &content_length_type, &content_length) >= 0 &&
-        static_cast<uint64_t>(content_length) > expected_size) {
-        error = "HTTP response Content-Length exceeded expected package size";
+        static_cast<uint64_t>(content_length) > response_bytes_expected) {
+        error = "HTTP response Content-Length exceeded remaining package size";
         close_request(handles);
-        return false;
-    }
-
-    const int fd = open(destination, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
-    if (fd < 0) {
-        error = "cannot securely create partial package file";
-        close_request(handles);
-        return false;
-    }
-    FILE* file = fdopen(fd, "wb");
-    if (!file) {
         close(fd);
-        error = "cannot open partial package stream";
-        close_request(handles);
         return false;
     }
 
-    downloaded_bytes = 0;
-    std::vector<unsigned char> buffer(256 * 1024);
+    if (lseek(fd, static_cast<off_t>(write_offset), SEEK_SET) < 0) {
+        error = "cannot seek partial package file";
+        close_request(handles);
+        close(fd);
+        return false;
+    }
+    downloaded_bytes = write_offset;
+    if (callback) callback(downloaded_bytes, expected_size, user);
+    uint64_t response_bytes_read = 0;
+    std::vector<unsigned char> buffer(kDownloadBufferSize);
     bool ok = true;
     for (;;) {
         const int count = sceHttpReadData(handles.req, &buffer[0], static_cast<uint32_t>(buffer.size()));
@@ -405,29 +513,43 @@ bool HttpClient::download(const std::string& url, const char* destination, uint6
         }
         if (count == 0) break;
         const uint64_t amount = static_cast<uint64_t>(count);
-        if (downloaded_bytes > expected_size || amount > expected_size - downloaded_bytes) {
+        if (response_bytes_read > response_bytes_expected ||
+            amount > response_bytes_expected - response_bytes_read ||
+            downloaded_bytes > expected_size || amount > expected_size - downloaded_bytes) {
             error = "HTTP response body exceeded expected package size";
             ok = false;
             break;
         }
-        const size_t written = std::fwrite(&buffer[0], 1, static_cast<size_t>(count), file);
+        size_t written = 0;
+        while (written < static_cast<size_t>(count)) {
+            const ssize_t amount_written = write(fd, &buffer[written],
+                                                 static_cast<size_t>(count) - written);
+            if (amount_written < 0 && errno == EINTR) continue;
+            if (amount_written <= 0) break;
+            written += static_cast<size_t>(amount_written);
+        }
         if (written != static_cast<size_t>(count)) {
             error = "failed to write partial package file";
             ok = false;
             break;
         }
+        response_bytes_read += amount;
         downloaded_bytes += amount;
         if (callback) callback(downloaded_bytes, expected_size, user);
     }
-    if (ok && std::fflush(file) != 0) {
-        error = "failed to flush partial package file";
+    if (ok && response_bytes_read != response_bytes_expected) {
+        error = "HTTP response ended before the expected package bytes arrived";
         ok = false;
     }
-    if (ok && fsync(fileno(file)) != 0) {
+    if (ok && downloaded_bytes != expected_size) {
+        error = "HTTP range response ended before the package was complete";
+        ok = false;
+    }
+    if (fsync(fd) != 0 && ok) {
         error = "failed to sync partial package file";
         ok = false;
     }
-    if (std::fclose(file) != 0 && ok) {
+    if (close(fd) != 0 && ok) {
         error = "failed to close partial package file";
         ok = false;
     }

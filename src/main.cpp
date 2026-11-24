@@ -45,6 +45,7 @@ const uint64_t kFreeSpaceReserve = 64ULL * 1024ULL * 1024ULL;
 const int kInstallPollLimit = 7200;
 const uint32_t kInstallPollDelayUs = 500000;
 const int kInstallStablePolls = 4;
+const int kQueueAutomaticRetries = 5;
 
 const char* kBootLogPaths[] = {
     "/mnt/usb0/FPKGi-Native-boot.log",
@@ -369,6 +370,7 @@ bool install_package(SharedState* state, const CatalogItem& item) {
     const std::string filename = fpkgi::canonical_package_filename(item);
     const std::string pkg_path = std::string(kDownloadDirectory) + "/" + filename;
     const std::string partial_path = pkg_path + ".part";
+    const std::string torrent_resume_path = pkg_path + ".torrent.resume";
 
     fpkgi::PackageVerification verification;
     if (file_exists(pkg_path)) {
@@ -399,13 +401,14 @@ bool install_package(SharedState* state, const CatalogItem& item) {
                     set_status(state, "TORRENT FILE UNAVAILABLE; FALLING BACK TO HTTPS", true);
                 }
             }
-            if (!item.magnet_uri.empty() || !torrent_data.empty()) {
+            if (!item.magnet_uri.empty() || !torrent_data.empty() || file_exists(torrent_resume_path)) {
                 const std::string torrent_partial_path = pkg_path + ".torrent.part";
                 const std::string torrent_work_directory = pkg_path + ".torrent-work";
                 set_status(state, "TORRENTING " + item.name, true);
                 error.clear();
                 if (fpkgi::download_via_torrent(item.magnet_uri, torrent_data,
-                                                torrent_work_directory, torrent_partial_path.c_str(),
+                                                torrent_work_directory, torrent_resume_path,
+                                                torrent_partial_path.c_str(),
                                                 item.size_bytes, progress_callback, state, error)) {
                     set_status(state, "VERIFYING TORRENT PACKAGE", true);
                     if (fpkgi::verify_package_file(torrent_partial_path.c_str(), item.size_bytes,
@@ -454,7 +457,8 @@ bool install_package(SharedState* state, const CatalogItem& item) {
         if (downloaded_path == partial_path) set_status(state, "VERIFYING PACKAGE", true);
         if (!fpkgi::verify_package_file(downloaded_path.c_str(), item.size_bytes, item.sha256,
                                         verification, error)) {
-            set_status(state, "PACKAGE VERIFY FAILED - PARTIAL KEPT: " + error, false);
+            remove(downloaded_path.c_str());
+            set_status(state, "PACKAGE VERIFY FAILED - INVALID FILE REMOVED: " + error, false);
             return false;
         }
         if (file_exists(pkg_path)) {
@@ -465,6 +469,7 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             set_status(state, "PACKAGE VERIFIED BUT FINAL RENAME FAILED - PARTIAL KEPT", false);
             return false;
         }
+        remove(torrent_resume_path.c_str());
     }
 
     progress_callback(0, 0, state);
@@ -526,6 +531,15 @@ bool install_package(SharedState* state, const CatalogItem& item) {
     return false;
 }
 
+bool retryable_queue_failure(SharedState* state) {
+    pthread_mutex_lock(&state->mutex);
+    const bool retryable =
+        state->status.compare(0, std::strlen("DOWNLOAD FAILED"), "DOWNLOAD FAILED") == 0 ||
+        state->status.compare(0, std::strlen("NETWORK INIT FAILED"), "NETWORK INIT FAILED") == 0;
+    pthread_mutex_unlock(&state->mutex);
+    return retryable;
+}
+
 void process_queue(SharedState* state) {
     for (;;) {
         CatalogItem item;
@@ -538,7 +552,17 @@ void process_queue(SharedState* state) {
         item = state->queue.front();
         pthread_mutex_unlock(&state->mutex);
 
-        if (!install_package(state, item)) return;
+        int retry = 0;
+        while (!install_package(state, item)) {
+            if (!retryable_queue_failure(state) || retry >= kQueueAutomaticRetries) return;
+            const unsigned int delay_seconds = std::min(300U, 5U << retry);
+            std::ostringstream retry_status;
+            retry_status << "RETRYING " << item.name << " IN " << delay_seconds
+                         << "S (" << (retry + 1) << "/" << kQueueAutomaticRetries << ')';
+            set_status(state, retry_status.str(), true);
+            sceKernelUsleep(delay_seconds * 1000000U);
+            ++retry;
+        }
 
         pthread_mutex_lock(&state->mutex);
         if (!state->queue.empty() && state->queue.front().pkg_url == item.pkg_url)
