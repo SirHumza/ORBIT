@@ -328,7 +328,54 @@ bool normalize_sha256(const Json& object, std::string& output, std::string& erro
 bool allowed_metadata_key(const std::string& key) {
     return key == "title_id" || key == "region" || key == "name" || key == "version" ||
            key == "release" || key == "size" || key == "min_fw" || key == "cover_url" ||
-           key == "sha256";
+           key == "sha256" || key == "magnet_uri" || key == "torrent_file";
+}
+
+bool valid_magnet_uri(const std::string& value) {
+    if (value.size() > kMaxUrlLength || lower_ascii(value.substr(0, 8)) != "magnet:?" ||
+        value.find('#') != std::string::npos || value.find('\\') != std::string::npos ||
+        has_invalid_url_character(value) || !valid_percent_escapes(value)) return false;
+
+    const size_t query_start = value.find('?');
+    if (query_start == std::string::npos || query_start + 1 == value.size()) return false;
+    size_t begin = query_start + 1;
+    while (begin <= value.size()) {
+        const size_t end = value.find('&', begin);
+        const size_t part_end = end == std::string::npos ? value.size() : end;
+        const size_t equals = value.find('=', begin);
+        if (equals != std::string::npos && equals < part_end &&
+            lower_ascii(value.substr(begin, equals - begin)) == "xt") {
+            const std::string topic = lower_ascii(value.substr(equals + 1, part_end - equals - 1));
+            const std::string prefix = "urn:btih:";
+            if (topic.compare(0, prefix.size(), prefix) == 0) {
+                const std::string hash = topic.substr(prefix.size());
+                if (hash.size() == 40) {
+                    bool hex = true;
+                    for (size_t i = 0; i < hash.size(); ++i)
+                        if (!std::isxdigit(static_cast<unsigned char>(hash[i]))) hex = false;
+                    if (hex) return true;
+                } else if (hash.size() == 32) {
+                    bool base32 = true;
+                    for (size_t i = 0; i < hash.size(); ++i) {
+                        const char c = hash[i];
+                        if (!((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7'))) base32 = false;
+                    }
+                    if (base32) return true;
+                }
+            }
+        }
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return false;
+}
+
+bool valid_torrent_filename(const std::string& value) {
+    if (value.empty() || value.size() > 255 || value == "." || value == ".." ||
+        value.find('/') != std::string::npos || value.find('\\') != std::string::npos ||
+        value.find(':') != std::string::npos ||
+        has_control(value)) return false;
+    return lower_ascii(value.substr(value.size() >= 8 ? value.size() - 8 : 0)) == ".torrent";
 }
 
 std::string sanitize_component(const std::string& value, size_t max_length, const char* fallback) {
@@ -485,7 +532,9 @@ bool parse_catalog(const std::string& json, std::vector<CatalogItem>& items, std
                 !bounded_string(metadata, "region", false, true, 16, item.region, error) ||
                 !bounded_string(metadata, "release", false, true, 32, item.release, error) ||
                 !bounded_string(metadata, "min_fw", false, true, 16, item.min_fw, error) ||
-                !bounded_string(metadata, "cover_url", false, true, kMaxUrlLength, item.cover_url, error)) {
+                !bounded_string(metadata, "cover_url", false, true, kMaxUrlLength, item.cover_url, error) ||
+                !bounded_string(metadata, "magnet_uri", false, true, kMaxUrlLength, item.magnet_uri, error) ||
+                !bounded_string(metadata, "torrent_file", false, true, 255, item.torrent_file, error)) {
                 return false;
             }
             if (!valid_version(item.version)) {
@@ -494,6 +543,18 @@ bool parse_catalog(const std::string& json, std::vector<CatalogItem>& items, std
             }
             if (!item.cover_url.empty() && !validate_http_url(item.cover_url, url_error)) {
                 error = "invalid cover_url: " + url_error;
+                return false;
+            }
+            if (!item.magnet_uri.empty() && !valid_magnet_uri(item.magnet_uri)) {
+                error = "field 'magnet_uri' must contain a BitTorrent v1 info hash";
+                return false;
+            }
+            if (!item.torrent_file.empty() && !valid_torrent_filename(item.torrent_file)) {
+                error = "field 'torrent_file' must be a .torrent filename without a path";
+                return false;
+            }
+            if (!item.magnet_uri.empty() && !item.torrent_file.empty()) {
+                error = "metadata may contain magnet_uri or torrent_file, not both";
                 return false;
             }
 

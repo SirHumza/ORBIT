@@ -78,6 +78,18 @@
         "sha256": {
           "type": "string",
           "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "magnet_uri": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^magnet:\\?"
+        },
+        "torrent_file": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^/\\\\:]+\\.torrent$"
         }
       }
     }

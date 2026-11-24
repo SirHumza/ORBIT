@@ -19,6 +19,8 @@ struct CatalogItem {
     std::string min_fw;
     std::string cover_url;
     std::string sha256;
+    std::string magnet_uri;
+    std::string torrent_file;
     uint64_t size_bytes;
 };
 

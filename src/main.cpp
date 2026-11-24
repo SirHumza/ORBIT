@@ -4,6 +4,7 @@
 #include "package_verify.hpp"
 #include "pixel_font.hpp"
 #include "pkg_installer.hpp"
+#include "torrent_engine.hpp"
 
 #include <SDL2/SDL.h>
 #include <orbis/libkernel.h>
@@ -37,7 +38,9 @@ const char* kCachedCatalog = "/data/FPKGi/catalog.json";
 const char* kQueuePath = "/data/FPKGi/queue.json";
 const char* kLegacyCatalogDirectory = "/user/data/FPKGi/ContentJSONs";
 const char* kDownloadDirectory = "/data/FPKGi/downloads";
+const char* kTorrentInputDirectory = "/data/FPKGi/torrents";
 const size_t kMaxCatalogBytes = 2 * 1024 * 1024;
+const size_t kMaxTorrentBytes = 4 * 1024 * 1024;
 const uint64_t kFreeSpaceReserve = 64ULL * 1024ULL * 1024ULL;
 const int kInstallPollLimit = 7200;
 const uint32_t kInstallPollDelayUs = 500000;
@@ -143,7 +146,8 @@ bool ensure_private_directory(const char* path, std::string& error) {
 
 bool ensure_directories(std::string& error) {
     return ensure_private_directory(kDataDirectory, error) &&
-           ensure_private_directory(kDownloadDirectory, error);
+           ensure_private_directory(kDownloadDirectory, error) &&
+           ensure_private_directory(kTorrentInputDirectory, error);
 }
 
 void set_status(SharedState* state, const std::string& status, bool running, int32_t error_code = 0) {
@@ -238,6 +242,8 @@ std::string queue_as_fpkgi_json(const std::vector<CatalogItem>& queue) {
         if (!item.min_fw.empty()) out << ",\"min_fw\":\"" << json_escape(item.min_fw) << '\"';
         if (!item.cover_url.empty()) out << ",\"cover_url\":\"" << json_escape(item.cover_url) << '\"';
         if (!item.sha256.empty()) out << ",\"sha256\":\"" << json_escape(item.sha256) << '\"';
+        if (!item.magnet_uri.empty()) out << ",\"magnet_uri\":\"" << json_escape(item.magnet_uri) << '\"';
+        if (!item.torrent_file.empty()) out << ",\"torrent_file\":\"" << json_escape(item.torrent_file) << '\"';
         out << '}';
     }
     out << "}}";
@@ -379,27 +385,65 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             set_status(state, "DOWNLOAD PREFLIGHT FAILED: " + error, false);
             return false;
         }
-        set_status(state, space_known ? "DOWNLOADING " + item.name
-                                      : "FREE SPACE UNKNOWN; DOWNLOADING " + item.name,
-                   true);
-        if (!state->http.initialize(error)) {
-            set_status(state, "NETWORK INIT FAILED: " + error, false);
-            return false;
-        }
-        uint64_t downloaded = 0;
+        std::string downloaded_path = partial_path;
         bool downloaded_ok = false;
-        for (int attempt = 0; attempt < 3; ++attempt) {
-            error.clear();
-            if (state->http.download(item.pkg_url, partial_path.c_str(), item.size_bytes,
-                                     progress_callback, state, downloaded, error)) {
-                downloaded_ok = true;
-                break;
+        if (!item.magnet_uri.empty() || !item.torrent_file.empty()) {
+            if (!state->http.initialize(error)) {
+                set_status(state, "NETWORK INIT FAILED: " + error, false);
+                return false;
             }
-            if (attempt < 2) {
-                std::ostringstream retry;
-                retry << "DOWNLOAD FAILED - RETRY " << (attempt + 1) << "/2: " << error;
-                set_status(state, retry.str(), true);
-                sceKernelUsleep(static_cast<uint32_t>((attempt + 1) * 1000000));
+            std::string torrent_data;
+            if (!item.torrent_file.empty()) {
+                const std::string torrent_path = std::string(kTorrentInputDirectory) + "/" + item.torrent_file;
+                if (!fpkgi::load_text_file(torrent_path.c_str(), kMaxTorrentBytes, torrent_data, error)) {
+                    set_status(state, "TORRENT FILE UNAVAILABLE; FALLING BACK TO HTTPS", true);
+                }
+            }
+            if (!item.magnet_uri.empty() || !torrent_data.empty()) {
+                const std::string torrent_partial_path = pkg_path + ".torrent.part";
+                const std::string torrent_work_directory = pkg_path + ".torrent-work";
+                set_status(state, "TORRENTING " + item.name, true);
+                error.clear();
+                if (fpkgi::download_via_torrent(item.magnet_uri, torrent_data,
+                                                torrent_work_directory, torrent_partial_path.c_str(),
+                                                item.size_bytes, progress_callback, state, error)) {
+                    set_status(state, "VERIFYING TORRENT PACKAGE", true);
+                    if (fpkgi::verify_package_file(torrent_partial_path.c_str(), item.size_bytes,
+                                                   item.sha256, verification, error)) {
+                        downloaded_path = torrent_partial_path;
+                        downloaded_ok = true;
+                    } else {
+                        remove(torrent_partial_path.c_str());
+                        set_status(state, "TORRENT PACKAGE INVALID; FALLING BACK TO HTTPS", true);
+                    }
+                } else {
+                    set_status(state, "TORRENT SOURCE FAILED; FALLING BACK TO HTTPS: " + error, true);
+                }
+            }
+        }
+
+        if (!downloaded_ok) {
+            if (!state->http.initialize(error)) {
+                set_status(state, "NETWORK INIT FAILED: " + error, false);
+                return false;
+            }
+            set_status(state, space_known ? "DOWNLOADING " + item.name
+                                          : "FREE SPACE UNKNOWN; DOWNLOADING " + item.name,
+                       true);
+            uint64_t downloaded = 0;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                error.clear();
+                if (state->http.download(item.pkg_url, partial_path.c_str(), item.size_bytes,
+                                         progress_callback, state, downloaded, error)) {
+                    downloaded_ok = true;
+                    break;
+                }
+                if (attempt < 2) {
+                    std::ostringstream retry;
+                    retry << "DOWNLOAD FAILED - RETRY " << (attempt + 1) << "/2: " << error;
+                    set_status(state, retry.str(), true);
+                    sceKernelUsleep(static_cast<uint32_t>((attempt + 1) * 1000000));
+                }
             }
         }
         if (!downloaded_ok) {
@@ -407,8 +451,8 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             return false;
         }
 
-        set_status(state, "VERIFYING PACKAGE", true);
-        if (!fpkgi::verify_package_file(partial_path.c_str(), item.size_bytes, item.sha256,
+        if (downloaded_path == partial_path) set_status(state, "VERIFYING PACKAGE", true);
+        if (!fpkgi::verify_package_file(downloaded_path.c_str(), item.size_bytes, item.sha256,
                                         verification, error)) {
             set_status(state, "PACKAGE VERIFY FAILED - PARTIAL KEPT: " + error, false);
             return false;
@@ -417,7 +461,7 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             set_status(state, "FINAL PACKAGE APPEARED DURING DOWNLOAD - BOTH FILES KEPT", false);
             return false;
         }
-        if (rename(partial_path.c_str(), pkg_path.c_str()) != 0) {
+        if (rename(downloaded_path.c_str(), pkg_path.c_str()) != 0) {
             set_status(state, "PACKAGE VERIFIED BUT FINAL RENAME FAILED - PARTIAL KEPT", false);
             return false;
         }
@@ -747,6 +791,8 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
         fpkgi::draw_text(renderer, 400, 548, 3, "/USER/DATA/FPKGI/CONTENTJSONS", white);
         fpkgi::draw_text(renderer, 400, 612, 2, "THEN PRESS TRIANGLE TO REFRESH THE LIBRARY", muted);
         fpkgi::draw_text(renderer, 400, 666, 2, "ONLY USE PACKAGE SOURCES YOU ARE AUTHORIZED TO ACCESS", faint);
+        fpkgi::draw_text(renderer, 400, 710, 2, "OPTIONAL .TORRENT FILES", faint);
+        fpkgi::draw_text(renderer, 400, 742, 3, "/DATA/FPKGI/TORRENTS", white);
     } else {
         const int visible = 7;
         int first = std::max(0, selected - visible + 1);

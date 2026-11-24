@@ -1,0 +1,36 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -490,7 +490,6 @@ find_public_dependency(Threads REQUIRED)
+ 
+ if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
+ 	add_compile_options(
+-		-Weverything
+ 		-Wno-c++98-compat-pedantic
+ 		-Wno-c++11-compat-pedantic
+ 		-Wno-padded
+diff --git a/src/enum_net.cpp b/src/enum_net.cpp
+--- a/src/enum_net.cpp
++++ b/src/enum_net.cpp
+@@ -1471,7 +1471,8 @@ int _System __libsocket_sysctl(int* mib, u_int namelen, void *oldp, size_t *oldl
+ #elif defined TORRENT_ANDROID && __ANDROID_API__ >= 24
+ 		ec = boost::asio::error::operation_not_supported;
+ #else
+-#error "don't know how to enumerate network routes on this platform"
++// OpenOrbis exposes neither BSD sysctl routes nor Linux netlink routes.
++		// Leave routes empty; normal socket routing selects the default route.
+ #endif
+ 		return ret;
+ 	}
+diff --git a/deps/try_signal/try_signal.cpp b/deps/try_signal/try_signal.cpp
+--- a/deps/try_signal/try_signal.cpp
++++ b/deps/try_signal/try_signal.cpp
+@@ -74,7 +74,7 @@ void handler(int const signo, siginfo_t*, void*)
+ void setup_handler()
+ {
+ 	struct sigaction sa;
+-	sa.sa_sigaction = &sig::detail::handler;
++	sa.__sa_handler.__sa_sigaction = &sig::detail::handler;
+ 	sigemptyset(&sa.sa_mask);
+ 	sa.sa_flags = SA_SIGINFO;
+ 	sigaction(SIGSEGV, &sa, nullptr);

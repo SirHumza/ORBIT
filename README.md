@@ -27,4 +27,4 @@ D-pad moves through catalog entries. Cross adds the selected entry to the persis
 
 ## Status
 
-The HTTPS catalog/download/install path is inherited from the GPL-2 FPKGi Native base. The durable queue and retry path are new ORBIT work. Native BitTorrent, torrent-to-install integration, background operation after closing the app, Rest Mode completion behavior, and GoldHEN 9.00 hardware qualification remain in progress; see [PLAN.md](PLAN.md).
+The FPKGi-compatible HTTPS catalog/download/install flow is retained. ORBIT adds native libtorrent support for catalog magnets and user-supplied `.torrent` files, piece verification, HTTPS fallback, and a durable package queue. Torrent transfer limits are unset and the active torrent can connect to up to 100 peers. Partial data is rechecked when retried. In-app pause/resume, background downloads after closing the app, and GoldHEN 9.00 PS4 Slim hardware qualification remain in progress. Automatic sleep and Rest Mode are off. See [PLAN.md](PLAN.md).

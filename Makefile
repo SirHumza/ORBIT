@@ -33,9 +33,19 @@ LIBS := -lc -lkernel -lc++ -lSceUserService -lSceSystemService -lSceSysmodule \
         -lSceAudioOut -lScePad -lSDL2
 CFLAGS   := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c -DORBIS -D_GNU_SOURCE \
             -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
-CXXFLAGS := $(CFLAGS) -std=c++11 -MMD -MP -isystem $(TOOLCHAIN)/include/c++/v1
+CXXFLAGS := $(CFLAGS) -std=c++14 -MMD -MP -isystem $(TOOLCHAIN)/include/c++/v1 \
+            -DBOOST_ASIO_ENABLE_CANCELIO -DBOOST_ASIO_HAS_STD_CHRONO \
+            -DBOOST_ASIO_NO_DEPRECATED -DBOOST_EXCEPTION_DISABLE \
+            -DTORRENT_DISABLE_ENCRYPTION -DTORRENT_NO_DEPRECATE \
+            -DFIONBIO=0x8004667e -DFIONREAD=0x4004667f \
+            -DTORRENT_USE_IFADDRS=1 -DTORRENT_USE_SYSCTL=0 \
+            -DTORRENT_USE_IFCONF=0 -DTORRENT_HAS_PTHREAD_SET_NAME=0 \
+            -I$(INTDIR)/deps/torrent/libtorrent-source/include \
+            -I$(INTDIR)/deps/torrent/boost
 LDFLAGS  := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
-            -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
+            -L$(TOOLCHAIN)/lib
+LINK_LIBS := $(INTDIR)/deps/torrent/libtorrent-rasterbar.a $(LIBS) $(TOOLCHAIN)/lib/crt1.o
+TORRENT_LIB := $(INTDIR)/deps/torrent/libtorrent-rasterbar.a
 
 CPPFILES := $(wildcard $(PROJDIR)/*.cpp)
 OBJS     := $(patsubst $(PROJDIR)/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
@@ -47,7 +57,7 @@ PACKAGE_FILES := eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/ic
 MODULE_DATA := $(TOOLCHAIN)/src/modules
 HOST_TEST := $(INTDIR)/host-contract-tests
 HOST_TEST_SOURCES := tests/contract_tests.cpp src/catalog.cpp src/package_verify.cpp \
-                     src/sha256.cpp src/pem_bundle.cpp
+                     src/sha256.cpp src/pem_bundle.cpp src/thread_exit_compat.cpp
 
 -include $(DEPS)
 
@@ -63,7 +73,7 @@ host-tests: $(HOST_TEST)
 
 $(HOST_TEST): $(HOST_TEST_SOURCES) src/catalog.hpp src/mini_json.hpp src/package_verify.hpp \
               src/sha256.hpp src/pem_bundle.hpp | $(INTDIR)
-	$(HOST_CXX) -std=c++11 -Wall -Wextra -Werror -Isrc -o $@ $(HOST_TEST_SOURCES)
+	$(HOST_CXX) -std=c++11 -Wall -Wextra -Werror -pthread -Isrc -o $@ $(HOST_TEST_SOURCES)
 
 prepare: sce_sys/about/right.sprx sce_sys/icon0.png $(RUNTIME_MODULES) $(PACKAGE_ASSETS)
 
@@ -73,11 +83,14 @@ catalog.json: catalog/catalog.json
 $(INTDIR):
 	mkdir -p $(INTDIR)
 
-$(INTDIR)/%.o: $(PROJDIR)/%.cpp | $(INTDIR)
+$(TORRENT_LIB): scripts/build_libtorrent_ps4.sh patches/libtorrent-openorbis.patch
+	OO_PS4_TOOLCHAIN="$(TOOLCHAIN)" CXX="$(CXX)" sh scripts/build_libtorrent_ps4.sh $(INTDIR)/deps/torrent
+
+$(INTDIR)/%.o: $(PROJDIR)/%.cpp $(TORRENT_LIB) | $(INTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 eboot.bin: $(OBJS)
-	$(LD) $(OBJS) -o $(INTDIR)/ORBIT.elf $(LDFLAGS)
+	$(LD) $(OBJS) -o $(INTDIR)/ORBIT.elf $(LDFLAGS) $(LINK_LIBS)
 	$(FSELF_TOOL) -in=$(INTDIR)/ORBIT.elf \
 		-out=$(INTDIR)/ORBIT.oelf --eboot eboot.bin --paid 0x3800000000000011
 

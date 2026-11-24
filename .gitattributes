@@ -1,0 +1,2 @@
+patches/*.patch whitespace=nowarn
+LICENSES/libtorrent-BSD-3-Clause.txt whitespace=nowarn

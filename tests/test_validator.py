@@ -35,6 +35,14 @@ class CatalogValidatorTests(unittest.TestCase):
         VALIDATOR.validate_document({"DATA": {
             "https://example.test/unicode.pkg": entry(name="A" * 92 + "\U0001F600"),
         }})
+        VALIDATOR.validate_document({"DATA": {
+            "https://example.test/torrent.pkg": entry(
+                magnet_uri="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            ),
+        }})
+        VALIDATOR.validate_document({"DATA": {
+            "https://example.test/local-torrent.pkg": entry(torrent_file="owner-export.torrent"),
+        }})
 
     def test_malformed_metadata_is_rejected(self) -> None:
         invalid_documents = [
@@ -57,6 +65,14 @@ class CatalogValidatorTests(unittest.TestCase):
             {"DATA": {"https://example.test/a.pkg": entry(cover_url="//example.test/cover.png")}},
             {"DATA": {"https://example.test/a.pkg": entry(unknown=True)}},
             {"DATA": {"https://example.test/a.pkg": entry(sha256="1234")}},
+            {"DATA": {"https://example.test/a.pkg": entry(magnet_uri="magnet:?dn=missing-infohash")}},
+            {"DATA": {"https://example.test/a.pkg": entry(magnet_uri="magnet:?xt=urn:btih:bad")}},
+            {"DATA": {"https://example.test/a.pkg": entry(torrent_file="../escape.torrent")}},
+            {"DATA": {"https://example.test/a.pkg": entry(torrent_file="bad:name.torrent")}},
+            {"DATA": {"https://example.test/a.pkg": entry(
+                magnet_uri="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+                torrent_file="both.torrent",
+            )}},
             {"DATA": {
                 "https://example.test/a.pkg": entry(),
                 "https://example.test/b.pkg": entry(name="Conflicting identity"),

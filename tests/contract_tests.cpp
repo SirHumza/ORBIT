@@ -5,11 +5,31 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <pthread.h>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
 namespace {
+
+extern "C" int __cxa_thread_atexit_impl(void (*function)(void*), void* object, void* dso);
+
+struct ThreadExitRecord {
+    std::vector<int>* order;
+    int value;
+};
+
+void record_thread_exit(void* raw) {
+    ThreadExitRecord* record = static_cast<ThreadExitRecord*>(raw);
+    record->order->push_back(record->value);
+}
+
+void* register_thread_exit_records(void* raw) {
+    ThreadExitRecord* records = static_cast<ThreadExitRecord*>(raw);
+    __cxa_thread_atexit_impl(record_thread_exit, &records[0], 0);
+    __cxa_thread_atexit_impl(record_thread_exit, &records[1], 0);
+    return 0;
+}
 
 int failures = 0;
 
@@ -44,6 +64,28 @@ void test_catalog_contract() {
                "SHA-256 is normalized to lowercase");
     }
     expect(parses("{\"DATA\":{}}"), "empty bundled catalog is valid");
+
+    const std::string magnet_catalog =
+        "{\"DATA\":{\"https://example.test/a.pkg\":{"
+        "\"title_id\":\"ABCD00002\",\"name\":\"Torrent item\","
+        "\"version\":\"1\",\"size\":\"32\","
+        "\"magnet_uri\":\"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567\"}}}";
+    items.clear();
+    error.clear();
+    expect(fpkgi::parse_catalog(magnet_catalog, items, error) && items.size() == 1 &&
+               items[0].magnet_uri.find("magnet:?") == 0,
+           "ORBIT torrent metadata accepts a v1 magnet alongside an FPKGi package URL");
+
+    const std::string torrent_file_catalog =
+        "{\"DATA\":{\"https://example.test/a.pkg\":{"
+        "\"title_id\":\"ABCD00003\",\"name\":\"Torrent file item\","
+        "\"version\":\"1\",\"size\":\"32\","
+        "\"torrent_file\":\"owner-export.torrent\"}}}";
+    items.clear();
+    error.clear();
+    expect(fpkgi::parse_catalog(torrent_file_catalog, items, error) && items.size() == 1 &&
+               items[0].torrent_file == "owner-export.torrent",
+           "ORBIT torrent metadata accepts a local torrent basename");
 
     const std::string unicode_name(92, 'A');
     const std::string unicode_catalog =
@@ -86,6 +128,10 @@ void test_catalog_contract() {
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"cover_url\":\"//example.test/cover.png\"}}}",
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"unknown\":true}}}",
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"sha256\":\"1234\"}}}",
+        "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"magnet_uri\":\"magnet:?dn=missing-infohash\"}}}",
+        "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"torrent_file\":\"../escape.torrent\"}}}",
+        "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"torrent_file\":\"bad:name.torrent\"}}}",
+        "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\",\"magnet_uri\":\"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567\",\"torrent_file\":\"both.torrent\"}}}",
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"A\",\"version\":\"1\",\"size\":\"1\"},\"https://example.test/b.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"B\",\"version\":\"1\",\"size\":\"2\"}}}",
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"\\uD83D\",\"version\":\"1\",\"size\":\"1\"}}}",
         "{\"DATA\":{\"https://example.test/a.pkg\":{\"title_id\":\"ABCD00001\",\"name\":\"\\uDE00\",\"version\":\"1\",\"size\":\"1\"}}}",
@@ -126,6 +172,17 @@ void test_catalog_contract() {
     }
     too_many_items += "}}";
     expect(!parses(too_many_items), "catalog package-count limit is enforced");
+}
+
+void test_thread_exit_compatibility() {
+    std::vector<int> order;
+    ThreadExitRecord records[2] = {{&order, 1}, {&order, 2}};
+    pthread_t thread;
+    expect(pthread_create(&thread, 0, register_thread_exit_records, records) == 0,
+           "thread-local destructor worker starts");
+    expect(pthread_join(thread, 0) == 0, "thread-local destructor worker joins");
+    expect(order.size() == 2 && order[0] == 2 && order[1] == 1,
+           "thread-local destructors run in reverse registration order");
 }
 
 void test_url_policy() {
@@ -352,6 +409,7 @@ void test_package_verification() {
 
 int main() {
     test_catalog_contract();
+    test_thread_exit_compatibility();
     test_hb_store_catalog_policy();
     test_url_policy();
     test_canonical_filename();

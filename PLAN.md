@@ -13,11 +13,11 @@ A controller-first FPKGi-compatible PS4 library with native BitTorrent, persiste
 - [x] Durable FPKGi-shaped download queue; sequential install and retry after failure.
 - [x] Reinstall/overwrite path no longer rejects an installed title before BGFT.
 - [x] Default bundled catalog is empty; only authorized catalog entries may be added.
-- [ ] Native BitTorrent engine: implement magnets, `.torrent`, piece/hash verification, pause/resume, and source fallback. A local libtorrent 2.0.11 static cross-build now compiles against the OpenOrbis target with a small PS4 portability patch; it is not yet linked into ORBIT or verified on hardware.
-- [ ] Connect torrent completion to the existing PKG verification and BGFT installer.
+- [x] Native libtorrent 2.0.11 engine accepts v1 magnets and local `.torrent` metadata, verifies torrent pieces, selects a size-matched PKG, then passes it through the existing SHA-256/PKG checks and BGFT install flow. HTTPS remains the fallback.
+- [ ] Add in-app pause/resume and fast-resume metadata. Partial torrent pieces remain in the work folder and are rechecked when retried.
 - [ ] Add removable storage, installed-title view, search/filter/sort, and richer package details.
-- [ ] Add configurable completion behavior and Rest Mode request after queue completion.
-- [ ] Verify suspend/resume and Rest Mode behavior on GoldHEN 9.00 PS4 Slim; do not assume userland torrent tasks survive suspend.
+- [x] Automatic sleep and Rest Mode are OFF. ORBIT issues no power-state request when downloads finish.
+- [ ] Research suspend/resume and Rest Mode behavior on GoldHEN 9.00 PS4 Slim. Do not assume userland torrent tasks survive suspend.
 - [ ] Exercise clean install, reinstall, HTTPS retry, queue recovery, and package verification on the target console.
 
 ## FPKGi feedback to address
@@ -26,4 +26,4 @@ Queue loss/cancellation: [issue 39](https://github.com/ItsJokerZz/FPKGi/issues/3
 
 ## Torrent assessment
 
-The referenced `sergiopoverony/ps4torrent_client` GitHub URL returned 404 during research, so reusable source is not yet verified. Rasterbar libtorrent is BSD-3-Clause and depends on Boost. A local experiment built its 2.0.11 static archive for the OpenOrbis FreeBSD target using Boost 1.89 headers, disabled route-table enumeration, FreeBSD socket ioctl constants, and a signal-header compatibility fix. This is only a compile result: the archive has not been linked into ORBIT, exercised through its runtime APIs, packaged, or tested on a PS4. Do not claim native torrent support until those steps succeed.
+The referenced `sergiopoverony/ps4torrent_client` GitHub URL returned 404 during research, so reusable source is not verified. Rasterbar libtorrent is BSD-3-Clause and depends on Boost. The build script pins libtorrent 2.0.11 and Boost 1.89, applies a small OpenOrbis compatibility patch, and links the static library into ORBIT. Torrent sessions have no app-imposed upload or download cap, allow up to 100 peers for the active torrent, and accelerate initial connection attempts. Peer availability, network quality, and console storage remain the practical limits; throughput is not benchmarked on PS4 hardware.

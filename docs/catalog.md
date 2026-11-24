@@ -30,4 +30,20 @@ The download staging directory is `/data/FPKGi/downloads`. Packages are written 
 
 ## Torrent entries
 
-The catalog parser and installer currently handle direct HTTP/HTTPS package URLs. Native BitTorrent metadata support and the torrent-to-installer handoff are tracked in [PLAN.md](../PLAN.md); ORBIT does not claim magnet or `.torrent` download support until those paths are implemented and verified.
+The standard FPKGi `DATA` map stays intact. ORBIT adds two optional metadata fields: `magnet_uri` for a BitTorrent v1 magnet, or `torrent_file` for a `.torrent` file copied to `/data/FPKGi/torrents/`. Use one field per entry. The package URL remains the HTTPS fallback; the torrent must match the declared size and pass PKG validation before installation.
+
+```json
+{
+  "DATA": {
+    "https://downloads.example.org/homebrew.pkg": {
+      "title_id": "ORBT00002",
+      "name": "Owner Homebrew",
+      "version": "1.00",
+      "size": "8388608",
+      "magnet_uri": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+    }
+  }
+}
+```
+
+For a qBittorrent-exported file, copy it to `/data/FPKGi/torrents/` and set its basename in `torrent_file`. ORBIT opens that file without following symlinks. The existing FPKGi package URL is used if the torrent source fails. Only import torrents and package sources you are authorized to use.

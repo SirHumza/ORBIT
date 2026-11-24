@@ -27,6 +27,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache torrent build downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/orbit
+          key: orbit-torrent-deps-v2-boost-1.89
+
       - name: Run host contracts and validate FPKGi catalog
         run: |
           make HOST_CXX=g++ host-tests
@@ -56,8 +62,9 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang-18 lld-18
+          sudo apt-get install -y --no-install-recommends clang-18 lld-18 cmake patch
           export OO_PS4_TOOLCHAIN="$TOOLCHAIN_ROOT"
+          export ORBIT_CACHE_DIR="$HOME/.cache/orbit"
           make CC=clang-18 CXX=clang++-18 LD=ld.lld-18 eboot.bin 2>&1 | tee orbit-compile.log
           test -s eboot.bin
 

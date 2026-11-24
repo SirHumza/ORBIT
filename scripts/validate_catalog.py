@@ -30,6 +30,8 @@ ALLOWED_FIELDS = {
     "min_fw",
     "cover_url",
     "sha256",
+    "magnet_uri",
+    "torrent_file",
 }
 OPTIONAL_TEXT_LIMITS = {"region": 16, "release": 32, "min_fw": 16}
 
@@ -118,6 +120,39 @@ def safe_http_url(value: Any, label: str) -> str:
     return value
 
 
+def safe_magnet(value: Any, label: str) -> str:
+    magnet = bounded_text(value, label, MAX_URL)
+    assert magnet is not None
+    if not magnet.lower().startswith("magnet:?") or "#" in magnet or "\\" in magnet:
+        fail(f"{label} must be a BitTorrent magnet URI")
+    if any(ord(character) <= 0x20 or ord(character) > 0x7E for character in magnet):
+        fail(f"{label} contains whitespace or a non-ASCII character")
+    for match in re.finditer("%", magnet):
+        if not re.fullmatch(r"[0-9A-Fa-f]{2}", magnet[match.start() + 1:match.start() + 3]):
+            fail(f"{label} contains an invalid percent escape")
+    valid_hash = False
+    for parameter in magnet.split("?", 1)[1].split("&"):
+        key, separator, value = parameter.partition("=")
+        topic = value.lower()
+        if separator and key.lower() == "xt" and topic.startswith("urn:btih:"):
+            info_hash = topic[len("urn:btih:"):]
+            valid_hash = bool(re.fullmatch(r"[0-9a-f]{40}|[a-z2-7]{32}", info_hash))
+            if valid_hash:
+                break
+    if not valid_hash:
+        fail(f"{label} must contain a 40-character hex or 32-character base32 BTIH")
+    return magnet
+
+
+def safe_torrent_filename(value: Any, label: str) -> str:
+    filename = bounded_text(value, label, 255)
+    assert filename is not None
+    if (filename in {".", ".."} or "/" in filename or "\\" in filename or
+            ":" in filename or not filename.lower().endswith(".torrent")):
+        fail(f"{label} must be a .torrent filename without a path")
+    return filename
+
+
 def parse_size(value: Any, label: str) -> int:
     if not isinstance(value, str) or len(value) > 20 or not DECIMAL_RE.fullmatch(value):
         fail(f"{label} must be a nonzero uint64 decimal string")
@@ -168,6 +203,14 @@ def validate_document(document: Any) -> None:
             sha256 = metadata["sha256"]
             if not isinstance(sha256, str) or not SHA_RE.fullmatch(sha256):
                 fail(f"{prefix}.sha256 must be 64 hexadecimal characters")
+        magnet = metadata.get("magnet_uri")
+        torrent_file = metadata.get("torrent_file")
+        if magnet is not None:
+            safe_magnet(magnet, f"{prefix}.magnet_uri")
+        if torrent_file is not None:
+            safe_torrent_filename(torrent_file, f"{prefix}.torrent_file")
+        if magnet is not None and torrent_file is not None:
+            fail(f"{prefix} may contain magnet_uri or torrent_file, not both")
         if package_url.lower().startswith("http://") and "sha256" not in metadata:
             fail(f"{prefix}.sha256 is required for an HTTP package URL")
 
