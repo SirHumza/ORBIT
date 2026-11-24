@@ -15,13 +15,13 @@ A controller-first FPKGi-compatible PS4 library with native BitTorrent, persiste
 - [x] Default bundled catalog is empty; only authorized catalog entries may be added.
 - [x] Native libtorrent 2.0.11 engine accepts v1 magnets and local `.torrent` metadata, verifies torrent pieces, selects a size-matched PKG, then passes it through the existing SHA-256/PKG checks and BGFT install flow. HTTPS remains the fallback.
 - [x] Add L1/Space in-app pause/resume for active transfers. Libtorrent pauses the torrent handle and flushes resume state; HTTPS stops reading and continues from the partial file on resume.
-- [ ] Keep downloads running after closing the app through a GoldHEN-compatible background service or payload.
+- [ ] Keep downloads running after closing the app through a separate GoldHEN daemon-world payload. ORBIT currently uses an app-owned worker; a service needs exclusive job ownership and separate state files to avoid racing the FPKGi queue. Daemon-world BGFT installation remains unverified.
 - [x] Retry failed queue jobs automatically with capped exponential backoff before leaving them queued for manual retry.
 - [x] Resume HTTPS downloads from retained partial data when the server honors byte ranges; use a larger native read buffer and faster torrent peer discovery ramp.
 - [ ] Add removable storage, installed-title view, search/filter/sort, and richer package details.
 - [x] Automatic sleep and Rest Mode are OFF. ORBIT issues no power-state request when downloads finish.
-- [ ] Research suspend/resume and Rest Mode behavior on GoldHEN 9.00 PS4 Slim. Do not assume userland torrent tasks survive suspend.
-- [ ] Exercise clean install, reinstall, HTTPS retry, queue recovery, and package verification on the target console.
+- [x] Review Rest Mode documentation: [GoldHEN 2.4b18 release notes](https://github.com/GoldHEN/GoldHEN/releases) list improved Rest Mode support, and [PlayStation's PS4 support page](https://www.playstation.com/en-us/support/hardware/ps4/) documents system-managed downloads while connected in Rest Mode. Neither documents arbitrary payload torrent networking, so treat that behavior as unverified.
+- [ ] Test suspend/resume and clean install, reinstall, HTTPS retry, queue recovery, and package verification on the target console. Automatic sleep and Rest Mode requests remain OFF.
 
 ## FPKGi feedback to address
 
