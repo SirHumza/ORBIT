@@ -169,6 +169,12 @@ bool parse_content_range(const std::string& header, uint64_t& first, uint64_t& l
     return first <= last && last < total;
 }
 
+void wait_if_paused(PauseRequestedCallback pause_requested,
+                    WaitWhilePausedCallback wait_while_paused, void* user) {
+    while (pause_requested && wait_while_paused && pause_requested(user))
+        wait_while_paused(user);
+}
+
 bool is_hb_store_origin(const std::string& url) {
     return url.compare(0, sizeof(kHbStorePrefix) - 1, kHbStorePrefix) == 0;
 }
@@ -404,8 +410,10 @@ bool HttpClient::get_text(const std::string& url, size_t max_bytes, std::string&
 }
 
 bool HttpClient::download(const std::string& url, const char* destination, uint64_t expected_size,
-                          ProgressCallback callback, void* user, uint64_t& downloaded_bytes,
-                          std::string& error) {
+                          ProgressCallback callback, void* user,
+                          PauseRequestedCallback pause_requested,
+                          WaitWhilePausedCallback wait_while_paused,
+                          uint64_t& downloaded_bytes, std::string& error) {
     downloaded_bytes = 0;
     if (!destination || expected_size == 0 ||
         expected_size > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
@@ -439,6 +447,7 @@ bool HttpClient::download(const std::string& url, const char* destination, uint6
         return true;
     }
 
+    wait_if_paused(pause_requested, wait_while_paused, user);
     RequestHandles handles;
     int32_t status = 0;
     std::string final_url;
@@ -505,6 +514,7 @@ bool HttpClient::download(const std::string& url, const char* destination, uint6
     std::vector<unsigned char> buffer(kDownloadBufferSize);
     bool ok = true;
     for (;;) {
+        wait_if_paused(pause_requested, wait_while_paused, user);
         const int count = sceHttpReadData(handles.req, &buffer[0], static_cast<uint32_t>(buffer.size()));
         if (count < 0) {
             error = native_error("sceHttpReadData", count);

@@ -7,6 +7,8 @@
 namespace fpkgi {
 
 typedef void (*ProgressCallback)(uint64_t downloaded, uint64_t total, void* user);
+typedef bool (*PauseRequestedCallback)(void* user);
+typedef void (*WaitWhilePausedCallback)(void* user);
 
 class HttpClient {
 public:
@@ -17,8 +19,10 @@ public:
     void shutdown();
     bool get_text(const std::string& url, size_t max_bytes, std::string& output, std::string& error);
     bool download(const std::string& url, const char* destination, uint64_t expected_size,
-                  ProgressCallback callback, void* user, uint64_t& downloaded_bytes,
-                  std::string& error);
+                  ProgressCallback callback, void* user,
+                  PauseRequestedCallback pause_requested,
+                  WaitWhilePausedCallback wait_while_paused,
+                  uint64_t& downloaded_bytes, std::string& error);
 
 private:
     int net_pool_;

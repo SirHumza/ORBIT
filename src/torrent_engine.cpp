@@ -7,6 +7,7 @@
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/settings_pack.hpp>
+#include <libtorrent/torrent_flags.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/write_resume_data.hpp>
@@ -153,7 +154,8 @@ bool select_package(const libtorrent::torrent_info& info, uint64_t expected_size
 bool download_via_torrent(const std::string& magnet_uri, const std::string& torrent_data,
                           const std::string& work_directory, const std::string& resume_path,
                           const char* destination,
-                          uint64_t expected_size, ProgressCallback callback, void* user,
+                          uint64_t expected_size, ProgressCallback callback,
+                          PauseRequestedCallback pause_requested, void* user,
                           std::string& error) {
     error.clear();
     if ((!magnet_uri.empty() && !torrent_data.empty()) || !destination || resume_path.empty() ||
@@ -229,6 +231,7 @@ bool download_via_torrent(const std::string& magnet_uri, const std::string& torr
                        : "torrent session returned an invalid handle";
             return false;
         }
+        handle.unset_flags(lt::torrent_flags::auto_managed);
         handle.set_max_connections(kTorrentConnectionLimit);
 
         std::string package_relative_path;
@@ -237,8 +240,32 @@ bool download_via_torrent(const std::string& magnet_uri, const std::string& torr
         std::chrono::steady_clock::time_point last_progress = started;
         std::chrono::steady_clock::time_point next_resume_save = started + kResumeSaveInterval;
         bool resume_save_pending = false;
+        bool paused = false;
+        std::chrono::steady_clock::time_point pause_started;
         int64_t last_done = -1;
         for (;;) {
+            const bool requested = pause_requested && pause_requested(user);
+            const std::chrono::steady_clock::time_point control_time =
+                std::chrono::steady_clock::now();
+            if (requested && !paused) {
+                handle.pause();
+                paused = true;
+                pause_started = control_time;
+                if (!resume_save_pending) {
+                    handle.save_resume_data(lt::torrent_handle::save_info_dict |
+                                            lt::torrent_handle::flush_disk_cache);
+                    resume_save_pending = true;
+                }
+                next_resume_save = control_time + kResumeSaveInterval;
+            } else if (!requested && paused) {
+                handle.resume();
+                const std::chrono::steady_clock::duration pause_duration = control_time - pause_started;
+                started += pause_duration;
+                last_progress += pause_duration;
+                next_resume_save += pause_duration;
+                paused = false;
+            }
+
             lt::torrent_status status = handle.status();
             if (status.errc) {
                 error = std::string("torrent failed: ") + status.errc.message();
@@ -277,11 +304,11 @@ bool download_via_torrent(const std::string& magnet_uri, const std::string& torr
                 resume_save_pending = true;
                 next_resume_save = now + kResumeSaveInterval;
             }
-            if (status.num_peers == 0 && now - started > kNoPeerTimeout) {
+            if (!paused && status.num_peers == 0 && now - started > kNoPeerTimeout) {
                 error = "no torrent peers found; trying HTTPS source";
                 return false;
             }
-            if (now - last_progress > kStallTimeout) {
+            if (!paused && now - last_progress > kStallTimeout) {
                 error = "torrent transfer stalled; trying HTTPS source";
                 return false;
             }

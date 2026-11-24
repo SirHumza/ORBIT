@@ -74,23 +74,31 @@ void boot_trace(const char* stage, const char* detail = 0) {
 
 struct SharedState {
     pthread_mutex_t mutex;
+    pthread_cond_t pause_condition;
     bool mutex_ready;
+    bool pause_condition_ready;
     std::vector<CatalogItem> items;
     std::vector<CatalogItem> queue;
     fpkgi::HttpClient http;
     bool job_running;
+    bool can_pause;
+    bool pause_requested;
+    bool job_paused;
     std::string status;
     uint64_t current;
     uint64_t total;
     int32_t last_error_code;
 
     SharedState()
-        : mutex_ready(false), job_running(false), status("STARTING"),
+        : mutex_ready(false), pause_condition_ready(false), job_running(false),
+          can_pause(false), pause_requested(false), job_paused(false), status("STARTING"),
           current(0), total(0), last_error_code(0) {
         mutex_ready = pthread_mutex_init(&mutex, 0) == 0;
+        if (mutex_ready) pause_condition_ready = pthread_cond_init(&pause_condition, 0) == 0;
     }
     ~SharedState() {
         http.shutdown();
+        if (pause_condition_ready) pthread_cond_destroy(&pause_condition);
         if (mutex_ready) pthread_mutex_destroy(&mutex);
     }
 };
@@ -162,9 +170,66 @@ void set_status(SharedState* state, const std::string& status, bool running, int
     pthread_mutex_unlock(&state->mutex);
 }
 
+void set_pause_available(SharedState* state, bool available) {
+    pthread_mutex_lock(&state->mutex);
+    state->can_pause = available && state->pause_condition_ready;
+    if (!state->can_pause) {
+        state->pause_requested = false;
+        state->job_paused = false;
+        if (state->pause_condition_ready)
+            pthread_cond_broadcast(&state->pause_condition);
+    }
+    pthread_mutex_unlock(&state->mutex);
+}
+
+bool is_pause_requested(void* user) {
+    SharedState* state = static_cast<SharedState*>(user);
+    pthread_mutex_lock(&state->mutex);
+    const bool requested = state->can_pause && state->pause_requested;
+    if (requested && !state->job_paused) {
+        state->job_paused = true;
+        state->status = "DOWNLOAD PAUSED";
+    } else if (!requested && state->job_paused) {
+        state->job_paused = false;
+        if (state->status == "DOWNLOAD PAUSED") state->status = "RESUMING DOWNLOAD";
+    }
+    pthread_mutex_unlock(&state->mutex);
+    return requested;
+}
+
+void wait_while_paused(void* user) {
+    SharedState* state = static_cast<SharedState*>(user);
+    pthread_mutex_lock(&state->mutex);
+    while (state->can_pause && state->pause_requested) {
+        state->job_paused = true;
+        state->status = "DOWNLOAD PAUSED";
+        pthread_cond_wait(&state->pause_condition, &state->mutex);
+    }
+    if (state->job_paused) {
+        state->job_paused = false;
+        if (state->status == "DOWNLOAD PAUSED") state->status = "RESUMING DOWNLOAD";
+    }
+    pthread_mutex_unlock(&state->mutex);
+}
+
+void toggle_download_pause(SharedState& state) {
+    pthread_mutex_lock(&state.mutex);
+    if (state.job_running && state.can_pause) {
+        state.pause_requested = !state.pause_requested;
+        state.job_paused = false;
+        state.status = state.pause_requested ? "PAUSING DOWNLOAD" : "RESUMING DOWNLOAD";
+        if (!state.pause_requested) pthread_cond_broadcast(&state.pause_condition);
+    }
+    pthread_mutex_unlock(&state.mutex);
+}
+
 void finish_job(SharedState* state) {
     pthread_mutex_lock(&state->mutex);
     state->job_running = false;
+    state->can_pause = false;
+    state->pause_requested = false;
+    state->job_paused = false;
+    if (state->pause_condition_ready) pthread_cond_broadcast(&state->pause_condition);
     state->current = 0;
     state->total = 0;
     pthread_mutex_unlock(&state->mutex);
@@ -387,10 +452,12 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             set_status(state, "DOWNLOAD PREFLIGHT FAILED: " + error, false);
             return false;
         }
+        set_pause_available(state, true);
         std::string downloaded_path = partial_path;
         bool downloaded_ok = false;
         if (!item.magnet_uri.empty() || !item.torrent_file.empty()) {
             if (!state->http.initialize(error)) {
+                set_pause_available(state, false);
                 set_status(state, "NETWORK INIT FAILED: " + error, false);
                 return false;
             }
@@ -409,7 +476,8 @@ bool install_package(SharedState* state, const CatalogItem& item) {
                 if (fpkgi::download_via_torrent(item.magnet_uri, torrent_data,
                                                 torrent_work_directory, torrent_resume_path,
                                                 torrent_partial_path.c_str(),
-                                                item.size_bytes, progress_callback, state, error)) {
+                                                item.size_bytes, progress_callback,
+                                                is_pause_requested, state, error)) {
                     set_status(state, "VERIFYING TORRENT PACKAGE", true);
                     if (fpkgi::verify_package_file(torrent_partial_path.c_str(), item.size_bytes,
                                                    item.sha256, verification, error)) {
@@ -427,6 +495,7 @@ bool install_package(SharedState* state, const CatalogItem& item) {
 
         if (!downloaded_ok) {
             if (!state->http.initialize(error)) {
+                set_pause_available(state, false);
                 set_status(state, "NETWORK INIT FAILED: " + error, false);
                 return false;
             }
@@ -437,7 +506,8 @@ bool install_package(SharedState* state, const CatalogItem& item) {
             for (int attempt = 0; attempt < 3; ++attempt) {
                 error.clear();
                 if (state->http.download(item.pkg_url, partial_path.c_str(), item.size_bytes,
-                                         progress_callback, state, downloaded, error)) {
+                                         progress_callback, state, is_pause_requested,
+                                         wait_while_paused, downloaded, error)) {
                     downloaded_ok = true;
                     break;
                 }
@@ -449,6 +519,7 @@ bool install_package(SharedState* state, const CatalogItem& item) {
                 }
             }
         }
+        set_pause_available(state, false);
         if (!downloaded_ok) {
             set_status(state, "DOWNLOAD FAILED - PARTIAL KEPT: " + error, false);
             return false;
@@ -632,6 +703,9 @@ bool start_job(SharedState& state, JobType type, const CatalogItem* item) {
     state.current = state.total = 0;
     state.last_error_code = 0;
     state.status = type == JobRefresh ? "STARTING CATALOG REFRESH" : "STARTING DOWNLOAD QUEUE";
+    state.can_pause = false;
+    state.pause_requested = false;
+    state.job_paused = false;
     pthread_mutex_unlock(&state.mutex);
 
     JobArgs* args = new JobArgs;
@@ -750,6 +824,9 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
     int32_t error_code = 0;
     size_t queue_count = 0;
     bool busy = false;
+    bool can_pause = false;
+    bool pause_requested = false;
+    bool job_paused = false;
     pthread_mutex_lock(&state.mutex);
     items = state.items;
     status = state.status;
@@ -758,6 +835,9 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
     error_code = state.last_error_code;
     queue_count = state.queue.size();
     busy = state.job_running;
+    can_pause = state.can_pause;
+    pause_requested = state.pause_requested;
+    job_paused = state.job_paused;
     pthread_mutex_unlock(&state.mutex);
 
     fill(renderer, 0, 0, kWidth, kHeight, background);
@@ -838,8 +918,10 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
     fill(renderer, 1512, 150, 4, 650, accent);
     fpkgi::draw_text(renderer, 1544, 180, 4, "DOWNLOAD QUEUE", white);
     fill(renderer, 1544, 233, 160, 34, inset);
-    fpkgi::draw_text(renderer, 1556, 244, 2, busy ? "DOWNLOADING" : "STANDING BY",
-                     busy ? accent : muted);
+    const char* activity = !busy ? "STANDING BY" :
+                           (pause_requested && !job_paused) ? "PAUSING" :
+                           job_paused ? "PAUSED" : "DOWNLOADING";
+    fpkgi::draw_text(renderer, 1556, 244, 2, activity, busy ? accent : muted);
     fpkgi::draw_text(renderer, 1544, 304, 2, "ITEMS WAITING", faint);
     fpkgi::draw_text(renderer, 1544, 338, 5, std::to_string(queue_count), white);
     fill(renderer, 1544, 395, 310, 1, divider);
@@ -890,10 +972,13 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
 
     fill(renderer, 0, 950, kWidth, 130, panel);
     fill(renderer, 0, 950, kWidth, 2, divider);
-    fpkgi::draw_text(renderer, 292, 980, 3, "X  QUEUE", white);
-    fpkgi::draw_text(renderer, 535, 980, 3, "TRIANGLE  REFRESH", white);
-    fpkgi::draw_text(renderer, 1000, 980, 3, "R1  RETRY QUEUE", white);
-    fpkgi::draw_text(renderer, 1430, 980, 3, "CIRCLE  EXIT", white);
+    fpkgi::draw_text(renderer, 292, 982, 2, "X  QUEUE", white);
+    fpkgi::draw_text(renderer, 500, 982, 2, "TRIANGLE  REFRESH", white);
+    const std::string pause_label = can_pause && (pause_requested || job_paused)
+        ? "L1  RESUME" : "L1  PAUSE";
+    fpkgi::draw_text(renderer, 820, 982, 2, pause_label, can_pause ? accent : muted);
+    fpkgi::draw_text(renderer, 1060, 982, 2, "R1  RETRY QUEUE", white);
+    fpkgi::draw_text(renderer, 1430, 982, 2, "CIRCLE  EXIT", white);
     fpkgi::draw_text(renderer, 292, 1028, 2,
                      "QUEUE AND PARTIAL FILES ARE SAVED UNDER /DATA/FPKGI", muted);
 }
@@ -974,6 +1059,7 @@ int main(int, char**) {
             bool choose = false;
             bool refresh = false;
             bool retryQueue = false;
+            bool togglePause = false;
             bool quit = false;
             if (event.type == SDL_QUIT) quit = true;
             if (event.type == SDL_KEYDOWN) {
@@ -982,6 +1068,7 @@ int main(int, char**) {
                 choose = event.key.keysym.sym == SDLK_RETURN;
                 refresh = event.key.keysym.sym == SDLK_r;
                 retryQueue = event.key.keysym.sym == SDLK_q;
+                togglePause = event.key.keysym.sym == SDLK_SPACE && !event.key.repeat;
                 quit = event.key.keysym.sym == SDLK_ESCAPE;
             } else if (event.type == SDL_JOYHATMOTION) {
                 up = (event.jhat.value & SDL_HAT_UP) != 0;
@@ -991,6 +1078,7 @@ int main(int, char**) {
                 quit = event.jbutton.button == 1;
                 refresh = event.jbutton.button == 3;
                 retryQueue = event.jbutton.button == 5;
+                togglePause = event.jbutton.button == 4;
             }
 
             pthread_mutex_lock(&state.mutex);
@@ -1000,6 +1088,7 @@ int main(int, char**) {
             if (count && selected >= 0 && selected < count) chosen = state.items[selected];
             pthread_mutex_unlock(&state.mutex);
 
+            if (togglePause) toggle_download_pause(state);
             if (up && count) selected = (selected + count - 1) % count;
             if (down && count) selected = (selected + 1) % count;
             if (refresh && !busy) start_job(state, JobRefresh, 0);
