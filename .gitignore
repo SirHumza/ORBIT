@@ -1,0 +1,15 @@
+/build/
+/catalog.json
+/sce_module/
+/sce_sys/
+eboot.bin
+/pkg.gp4
+/*.pkg
+*.elf
+*.oelf
+*.o
+.env
+__pycache__/
+*.pyc
+.DS_Store
+/catalog/hb_store_state.json.work
