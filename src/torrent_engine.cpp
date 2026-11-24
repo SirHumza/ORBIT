@@ -179,6 +179,7 @@ bool download_via_torrent(const std::string& magnet_uri, const std::string& torr
         settings.set_bool(lt::settings_pack::enable_lsd, true);
         settings.set_int(lt::settings_pack::download_rate_limit, 0);
         settings.set_int(lt::settings_pack::upload_rate_limit, 0);
+        settings.set_int(lt::settings_pack::max_queued_disk_bytes, 16 * 1024 * 1024);
         settings.set_int(lt::settings_pack::connections_limit, 300);
         settings.set_int(lt::settings_pack::connection_speed, 100);
         settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
