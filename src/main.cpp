@@ -665,25 +665,15 @@ std::string truncate_text(const std::string& value, size_t max_chars) {
 
 void render(SDL_Renderer* renderer, SharedState& state, int selected) {
     const SDL_Color background = {13, 18, 28, 255};
-    const SDL_Color panel = {24, 32, 46, 255};
-    const SDL_Color selected_color = {45, 112, 196, 255};
+    const SDL_Color sidebar = {20, 28, 41, 255};
+    const SDL_Color panel = {25, 35, 50, 255};
+    const SDL_Color inset = {17, 24, 35, 255};
+    const SDL_Color selected_color = {35, 58, 80, 255};
     const SDL_Color white = {240, 244, 250, 255};
-    const SDL_Color muted = {150, 164, 184, 255};
+    const SDL_Color muted = {157, 172, 192, 255};
+    const SDL_Color faint = {101, 119, 143, 255};
     const SDL_Color accent = {82, 193, 170, 255};
-    fill(renderer, 0, 0, kWidth, kHeight, background);
-    fill(renderer, 0, 0, kWidth, 120, panel);
-    fill(renderer, 0, 0, 250, kHeight, panel);
-    fill(renderer, 0, 0, 250, 8, accent);
-    fpkgi::draw_text(renderer, 42, 38, 7, "ORBIT", white);
-    fill(renderer, 28, 122, 194, 54, selected_color);
-    fpkgi::draw_text(renderer, 49, 139, 3, "BROWSE", white);
-    fpkgi::draw_text(renderer, 49, 205, 3, "DOWNLOADS", muted);
-    fpkgi::draw_text(renderer, 49, 271, 2, "FPKGI JSON", muted);
-    fpkgi::draw_text(renderer, 1430, 42, 3, "TITLE ID / VERSION / SIZE", muted);
-    fill(renderer, 278, 0, kWidth - 278, 96, panel);
-    fpkgi::draw_text(renderer, 310, 30, 5, "BROWSE LIBRARY", white);
-    fpkgi::draw_text(renderer, 310, 66, 2, "FPKGI JSON CATALOG  /  LOCAL + HTTPS", muted);
-    fpkgi::draw_text(renderer, 1430, 42, 3, "SEARCH  /  FILTER  /  SORT", muted);
+    const SDL_Color divider = {47, 62, 81, 255};
 
     std::vector<CatalogItem> items;
     std::string status;
@@ -702,42 +692,89 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
     busy = state.job_running;
     pthread_mutex_unlock(&state.mutex);
 
-    fpkgi::draw_text(renderer, 310, 124, 3, "NAME", muted);
-    fpkgi::draw_text(renderer, 1160, 124, 3, "TITLE ID", muted);
-    fpkgi::draw_text(renderer, 1390, 124, 3, "VERSION", muted);
-    fpkgi::draw_text(renderer, 1580, 124, 3, "SIZE", muted);
-    fill(renderer, 298, 155, 1190, 2, muted);
+    fill(renderer, 0, 0, kWidth, kHeight, background);
+    fill(renderer, 0, 0, 256, kHeight, sidebar);
+    fill(renderer, 0, 0, 256, 5, accent);
+    fill(renderer, 256, 0, 2, 950, divider);
+
+    // Small orbit mark keeps the wordmark recognizable without cover art or glow.
+    fill(renderer, 31, 42, 34, 34, accent);
+    fill(renderer, 38, 49, 20, 20, sidebar);
+    fill(renderer, 46, 45, 20, 6, accent);
+    fill(renderer, 59, 52, 6, 20, accent);
+    fpkgi::draw_text(renderer, 76, 45, 5, "ORBIT", white);
+    fpkgi::draw_text(renderer, 32, 105, 2, "PS4 LIBRARY", faint);
+    fill(renderer, 20, 145, 216, 62, selected_color);
+    fill(renderer, 20, 145, 4, 62, accent);
+    fpkgi::draw_text(renderer, 43, 165, 4, "BROWSE", white);
+    fpkgi::draw_text(renderer, 33, 248, 2, "DOWNLOAD QUEUE", muted);
+    fpkgi::draw_text(renderer, 204, 248, 2, std::to_string(queue_count), accent);
+    fill(renderer, 30, 291, 194, 1, divider);
+    fpkgi::draw_text(renderer, 32, 317, 2, "CATALOG SOURCE", faint);
+    fpkgi::draw_text(renderer, 32, 347, 3, "FPKGI JSON", white);
+    fpkgi::draw_text(renderer, 32, 379, 2, "LOCAL + HTTPS", muted);
+    fpkgi::draw_text(renderer, 32, 908, 2, "ORBIT  /  0.1.0", muted);
+
+    fill(renderer, 258, 0, kWidth - 258, 126, panel);
+    fpkgi::draw_text(renderer, 300, 30, 5, "BROWSE LIBRARY", white);
+    fpkgi::draw_text(renderer, 302, 76, 2, "YOUR FPKGI CATALOGS, READY TO INSTALL", muted);
+    fill(renderer, 1640, 35, 220, 48, inset);
+    SDL_Rect count_border = {1640, 35, 220, 48};
+    SDL_SetRenderDrawColor(renderer, divider.r, divider.g, divider.b, divider.a);
+    SDL_RenderDrawRect(renderer, &count_border);
+    fpkgi::draw_text(renderer, 1662, 53, 2,
+                     std::to_string(items.size()) + " PACKAGES", accent);
+    fill(renderer, 258, 125, kWidth - 258, 2, divider);
+
+    fpkgi::draw_text(renderer, 300, 157, 4, "ALL PACKAGES", white);
+    fpkgi::draw_text(renderer, 300, 198, 2,
+                     std::to_string(items.size()) + (items.size() == 1 ? " ITEM" : " ITEMS"), muted);
+    fpkgi::draw_text(renderer, 322, 244, 2, "TITLE", faint);
+    fpkgi::draw_text(renderer, 1080, 244, 2, "TITLE ID", faint);
+    fpkgi::draw_text(renderer, 1296, 244, 2, "VERSION", faint);
+    fpkgi::draw_text(renderer, 1412, 244, 2, "SIZE", faint);
+    fill(renderer, 298, 271, 1190, 1, divider);
 
     if (items.empty()) {
-        fpkgi::draw_text(renderer, 330, 240, 4, "NO PACKAGES IN THIS CATALOG", white);
-        fpkgi::draw_text(renderer, 330, 296, 3, "IMPORT A COMPATIBLE FPKGI JSON CATALOG", muted);
-        fpkgi::draw_text(renderer, 330, 342, 3, "ONLY ADD PACKAGES YOU ARE AUTHORIZED TO USE", muted);
+        fill(renderer, 298, 292, 1190, 508, panel);
+        SDL_Rect empty_border = {298, 292, 1190, 508};
+        SDL_SetRenderDrawColor(renderer, divider.r, divider.g, divider.b, divider.a);
+        SDL_RenderDrawRect(renderer, &empty_border);
+        fill(renderer, 348, 354, 4, 372, accent);
+        fpkgi::draw_text(renderer, 398, 392, 5, "YOUR LIBRARY IS EMPTY", white);
+        fpkgi::draw_text(renderer, 400, 447, 3, "ADD AN FPKGI JSON CATALOG TO GET STARTED", muted);
+        fpkgi::draw_text(renderer, 400, 516, 2, "SUPPORTED FOLDER", faint);
+        fpkgi::draw_text(renderer, 400, 548, 3, "/USER/DATA/FPKGI/CONTENTJSONS", white);
+        fpkgi::draw_text(renderer, 400, 612, 2, "THEN PRESS TRIANGLE TO REFRESH THE LIBRARY", muted);
+        fpkgi::draw_text(renderer, 400, 666, 2, "ONLY USE PACKAGE SOURCES YOU ARE AUTHORIZED TO ACCESS", faint);
     } else {
-        const int visible = 9;
+        const int visible = 7;
         int first = std::max(0, selected - visible + 1);
         if (selected < first) first = selected;
         for (int row = 0; row < visible && first + row < static_cast<int>(items.size()); ++row) {
             const int index = first + row;
-            const int y = 162 + row * 72;
+            const int y = 282 + row * 74;
             const bool focused = index == selected;
-            if (focused) fill(renderer, 298, y, 1190, 66, selected_color);
-            else if ((row & 1) == 0) fill(renderer, 298, y, 1190, 66, panel);
-            fpkgi::draw_text(renderer, 320, y + 10, 3, truncate_text(items[index].name, 48), white);
-            fpkgi::draw_text(renderer, 1160, y + 20, 2, items[index].title_id, focused ? white : muted);
-            fpkgi::draw_text(renderer, 1390, y + 20, 2, "V" + items[index].version, focused ? white : muted);
-            fpkgi::draw_text(renderer, 1580, y + 20, 2, human_bytes(items[index].size_bytes), focused ? white : muted);
+            fill(renderer, 298, y, 1190, 68, focused ? selected_color : ((row & 1) ? background : panel));
+            if (focused) fill(renderer, 298, y, 4, 68, accent);
+            fpkgi::draw_text(renderer, 322, y + 10, 4, truncate_text(items[index].name, 43), white);
+            fpkgi::draw_text(renderer, 1080, y + 21, 2, items[index].title_id, focused ? white : muted);
+            fpkgi::draw_text(renderer, 1296, y + 21, 2, "V" + items[index].version, focused ? white : muted);
+            fpkgi::draw_text(renderer, 1412, y + 21, 2, human_bytes(items[index].size_bytes), focused ? white : muted);
         }
     }
 
-    fill(renderer, 1512, 112, 374, 690, panel);
-    fill(renderer, 1512, 112, 5, 690, accent);
-    fpkgi::draw_text(renderer, 1542, 142, 4, "DOWNLOADS", white);
-    fpkgi::draw_text(renderer, 1542, 198, 3, busy ? "ACTIVE" : "IDLE", busy ? accent : muted);
-    fpkgi::draw_text(renderer, 1542, 246, 2, "QUEUE ITEMS", muted);
-    fpkgi::draw_text(renderer, 1542, 278, 4, std::to_string(queue_count), white);
-    fill(renderer, 1542, 326, 312, 2, muted);
-    fpkgi::draw_text(renderer, 1542, 354, 2, "CURRENT TASK", muted);
-    fpkgi::draw_text(renderer, 1542, 386, 2, truncate_text(status, 34), white);
+    fill(renderer, 1512, 150, 374, 650, panel);
+    fill(renderer, 1512, 150, 4, 650, accent);
+    fpkgi::draw_text(renderer, 1544, 180, 4, "DOWNLOAD QUEUE", white);
+    fill(renderer, 1544, 233, 160, 34, inset);
+    fpkgi::draw_text(renderer, 1556, 244, 2, busy ? "DOWNLOADING" : "STANDING BY",
+                     busy ? accent : muted);
+    fpkgi::draw_text(renderer, 1544, 304, 2, "ITEMS WAITING", faint);
+    fpkgi::draw_text(renderer, 1544, 338, 5, std::to_string(queue_count), white);
+    fill(renderer, 1544, 395, 310, 1, divider);
+    fpkgi::draw_text(renderer, 1544, 426, 2, "CURRENT TRANSFER", faint);
+    fpkgi::draw_text(renderer, 1544, 460, 2, truncate_text(status, 36), white);
     if (error_code) {
         std::ostringstream code;
         code << "ERROR 0X";
@@ -745,13 +782,13 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
         code.width(8);
         code.fill('0');
         code << static_cast<uint32_t>(error_code);
-        fpkgi::draw_text(renderer, 1542, 434, 2, code.str(), white);
+        fpkgi::draw_text(renderer, 1544, 500, 2, code.str(), white);
     }
     if (current || total) {
-        const int bar_x = 1542;
-        const int bar_y = 488;
-        const int bar_w = 312;
-        const int bar_h = 12;
+        const int bar_x = 1544;
+        const int bar_y = 530;
+        const int bar_w = 310;
+        const int bar_h = 10;
         fill(renderer, bar_x, bar_y, bar_w, bar_h, background);
         int filled = 0;
         if (total) filled = static_cast<int>((static_cast<double>(current) / static_cast<double>(total)) * bar_w);
@@ -763,25 +800,32 @@ void render(SDL_Renderer* renderer, SharedState& state, int selected) {
             progress_text << percent << "%   " << progress << " / " << human_bytes(total);
             progress = progress_text.str();
         }
-        fpkgi::draw_text(renderer, 1542, 518, 2, progress, muted);
+        fpkgi::draw_text(renderer, 1544, 558, 2, progress, muted);
+    } else if (queue_count == 0) {
+        fpkgi::draw_text(renderer, 1544, 522, 2, "NOTHING IN THE QUEUE", muted);
+        fpkgi::draw_text(renderer, 1544, 562, 2, "SELECT A TITLE AND PRESS X", faint);
+    } else {
+        fpkgi::draw_text(renderer, 1544, 522, 2, "NEXT ITEM STARTS AUTOMATICALLY", muted);
     }
 
     if (selected >= 0 && selected < static_cast<int>(items.size())) {
-        fill(renderer, 298, 835, 1588, 74, panel);
-        fpkgi::draw_text(renderer, 320, 850, 2, "SELECTED PACKAGE", muted);
-        fpkgi::draw_text(renderer, 320, 879, 3, truncate_text(items[selected].name, 58), white);
-        fpkgi::draw_text(renderer, 1040, 867, 2,
-                         items[selected].title_id + "  V" + items[selected].version +
-                         "  " + human_bytes(items[selected].size_bytes), muted);
+        fill(renderer, 298, 820, 1190, 104, panel);
+        fill(renderer, 298, 820, 4, 104, accent);
+        fpkgi::draw_text(renderer, 322, 837, 2, "SELECTED TITLE", faint);
+        fpkgi::draw_text(renderer, 322, 868, 4, truncate_text(items[selected].name, 42), white);
+        fpkgi::draw_text(renderer, 1080, 845, 2, items[selected].title_id, muted);
+        fpkgi::draw_text(renderer, 1080, 878, 2,
+                         "V" + items[selected].version + "  /  " + human_bytes(items[selected].size_bytes), muted);
     }
 
     fill(renderer, 0, 950, kWidth, 130, panel);
-    fill(renderer, 0, 950, kWidth, 2, muted);
-    fpkgi::draw_text(renderer, 292, 986, 2,
-                     "X ADD TO QUEUE   TRIANGLE REFRESH   R1 RETRY QUEUE   CIRCLE EXIT WHEN IDLE", white);
-    fpkgi::draw_text(renderer, 292, 1030, 2,
-                     "QUEUE DATA AND PARTIAL DOWNLOADS ARE KEPT UNDER /DATA/FPKGI", muted);
-    fpkgi::draw_text(renderer, 38, 1002, 2, "ORBIT  /  0.1.0", muted);
+    fill(renderer, 0, 950, kWidth, 2, divider);
+    fpkgi::draw_text(renderer, 292, 980, 3, "X  QUEUE", white);
+    fpkgi::draw_text(renderer, 535, 980, 3, "TRIANGLE  REFRESH", white);
+    fpkgi::draw_text(renderer, 1000, 980, 3, "R1  RETRY QUEUE", white);
+    fpkgi::draw_text(renderer, 1430, 980, 3, "CIRCLE  EXIT", white);
+    fpkgi::draw_text(renderer, 292, 1028, 2,
+                     "QUEUE AND PARTIAL FILES ARE SAVED UNDER /DATA/FPKGI", muted);
 }
 
 } // namespace

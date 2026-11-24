@@ -13,7 +13,7 @@ A controller-first FPKGi-compatible PS4 library with native BitTorrent, persiste
 - [x] Durable FPKGi-shaped download queue; sequential install and retry after failure.
 - [x] Reinstall/overwrite path no longer rejects an installed title before BGFT.
 - [x] Default bundled catalog is empty; only authorized catalog entries may be added.
-- [ ] Native BitTorrent engine: investigate `ps4torrent_client`; evaluate libtorrent cross-build; implement magnets, `.torrent`, piece/hash verification, pause/resume, and source fallback.
+- [ ] Native BitTorrent engine: implement magnets, `.torrent`, piece/hash verification, pause/resume, and source fallback. A local libtorrent 2.0.11 static cross-build now compiles against the OpenOrbis target with a small PS4 portability patch; it is not yet linked into ORBIT or verified on hardware.
 - [ ] Connect torrent completion to the existing PKG verification and BGFT installer.
 - [ ] Add removable storage, installed-title view, search/filter/sort, and richer package details.
 - [ ] Add configurable completion behavior and Rest Mode request after queue completion.
@@ -26,4 +26,4 @@ Queue loss/cancellation: [issue 39](https://github.com/ItsJokerZz/FPKGi/issues/3
 
 ## Torrent assessment
 
-The referenced `sergiopoverony/ps4torrent_client` GitHub URL returned 404 during research, so reusable source is not yet verified. Rasterbar libtorrent is BSD-3-Clause but depends on Boost and has no verified OpenOrbis PS4 build in this checkout. Do not claim native torrent support until a real engine is integrated, host-tested, and compiled into the package.
+The referenced `sergiopoverony/ps4torrent_client` GitHub URL returned 404 during research, so reusable source is not yet verified. Rasterbar libtorrent is BSD-3-Clause and depends on Boost. A local experiment built its 2.0.11 static archive for the OpenOrbis FreeBSD target using Boost 1.89 headers, disabled route-table enumeration, FreeBSD socket ioctl constants, and a signal-header compatibility fix. This is only a compile result: the archive has not been linked into ORBIT, exercised through its runtime APIs, packaged, or tested on a PS4. Do not claim native torrent support until those steps succeed.
